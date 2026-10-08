@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "factum"
+version = "0.2.0"
+description = "A repository-local evidence skill with Git portability and SQLite."
+requires-python = ">=3.11"
+dependencies = [
+    "jsonschema[format]>=4.23,<5",
+    "rapidfuzz>=3.10,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+]
+
+[project.scripts]
+factum = "factum_lib.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scripts/factum_lib"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"assets" = "factum_lib/assets"
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts"]
+testpaths = ["tests"]
