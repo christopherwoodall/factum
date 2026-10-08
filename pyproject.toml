@@ -17,9 +17,26 @@ dependencies = [
 [project.scripts]
 factum = "factum_lib.cli:main"
 
+[dependency-groups]
+dev = ["pytest>=8,<10", "build>=1,<2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts", "."]
+testpaths = ["tests"]
+
 [tool.setuptools]
 package-dir = {"" = "scripts"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["scripts"]
-include = ["factum_lib*"]
+include = ["factum_lib", "factum_lib.*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+factum_lib = [
+    "assets/packs/*/*/pack.json",
+    "assets/packs/*/*/definitions.json",
+    "assets/packs/*/*/schemas/*.json",
+    "assets/packs/*/*/schemas/**/*.json",
+]

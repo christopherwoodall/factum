@@ -1,6 +1,6 @@
 # Factum architecture
 
-This document describes the current repository-plugin implementation and its
+This document describes the current repository-skill implementation and its
 extension and testing contracts.
 
 It is not a claim that the implementation has passed the tests listed here.
@@ -44,7 +44,7 @@ The host repository owns the corpus.
 installed-toolkit/
 ├── SKILL.md
 ├── scripts/
-└── assets/packs/       # Seeds only
+└── scripts/factum_lib/assets/packs/  # Packaged seeds only
 
 host-repository/
 └── data/
@@ -213,6 +213,12 @@ Pack files are pinned by hashes in `data/schema-lock.json`.
 
 Only listed files participate in the pack contract.
 
+Git must preserve installed pack bytes. Initialization appends
+`data/schema-packs/** -text`; newline conversion would invalidate locked hashes.
+Existing `.gitignore` and `.gitattributes` bytes are preserved when rules are
+appended. Updating toolkit code does not update these host rules until `init`
+is run again.
+
 ## 7. Schema resolution
 
 Use JSON Schema Draft 2020-12.
@@ -264,6 +270,12 @@ The current annotation walker supports references through:
 
 Reference annotations beneath conditional/alternative branches or dynamic
 property matching are rejected where unsupported.
+
+Only JSON Schema subschema locations are inspected. Property names and
+`examples`, `default`, `const`, and `enum` data are not schema keywords.
+Annotations under `dependentSchemas`, `propertyNames`, `unevaluatedItems`,
+and `contentSchema` are also rejected because the reference compiler does
+not implement those traversals.
 
 Do not assume that any JSON Schema construction accepted by the standard
 validator is also supported by the reference compiler.
@@ -374,6 +386,27 @@ A failure after the pending file is durable may mean the submission was accepted
 even if indexing failed. Recovery must inspect pending state and retry with the
 same idempotency key.
 
+An idempotent retry returns the original IDs; it does not guarantee that a
+previously failed index rebuild has completed. Run `rebuild` if the index is
+missing or stale. Receipt validation checks both named IDs and all returned
+record IDs.
+
+Atomic writers sync files, publication directories, and newly created parent
+directory entries. The tests inject failures around these operations; they
+do not simulate physical power loss or prove every filesystem's durability.
+
+Failure recovery:
+
+| Interruption | State and retry |
+|---|---|
+| Before pending publication | No accepted submission; retry the same request |
+| After pending publication, before indexing | Accepted pending records survive; retry key and rebuild |
+| After batch publication, before pending cleanup | Batch and pending coexist; export retry checks equality and removes only the exported pending file |
+| Database replacement failure | Previous database remains; pending stays; retry rebuild |
+| Pack copied, before lock activation | Pack is inactive; retry unchanged candidate |
+| Lock activated, before rebuild | Pack is active; retry rebuild |
+| Partial first initialization | Stop for inspection; do not delete managed paths automatically |
+
 ## 12. Idempotency and offline replicas
 
 A key identifies a request within a corpus.
@@ -438,6 +471,11 @@ Search has separate concerns:
 Fuzzy matching uses heuristic candidate generation. It is not exhaustive.
 
 `not_found` is scoped to the query, indexed data, and matching policy.
+
+Unknown search types and unsupported constraints fail. Exact/key retrieval
+caps candidates at 5,000; fuzzy retrieval adds at most 2,000 FTS candidates
+from at most 32 query trigrams. Result limits are 1–200. Graph traversal limits
+depth to 0–10 and edges to 1–2,000, reporting omitted edges at either budget.
 
 Similarity does not decide:
 
@@ -621,3 +659,28 @@ Recommended benchmarks:
 
 Do not claim tests, recovery guarantees, or performance measurements that have
 not actually been executed.
+
+## 19. Running deployment checks
+
+The test suite is ordinary pytest, split into six `tests/test_*.py` files.
+All corpora and Git conflict fixtures are disposable and synthetic.
+
+```bash
+uv run --group dev pytest -q
+uv run --no-project tools/smoke_test.py
+```
+
+The smoke test stages current source files, including relevant uncommitted
+changes, and installs actual nested clones. It uses a local bare Git remote,
+independent replicas, a pinned submodule, and clean packaged installations.
+It leaves a JSON report and disposable workspace under `~/factum-validation/`.
+`--workspace <new-directory>` selects another new location.
+
+`FACTUM_TEST_PYTHON` selects the uv test interpreter (default `3.12`).
+`--skip-packaging` is for focused reruns, not release acceptance.
+Git fixture commits use the environment's existing identity; missing identity
+is an environment blocker. The tooling never configures identities or publishes
+to external remotes.
+
+See [docs/VALIDATION.md](docs/VALIDATION.md) for executed results and
+[docs/HANDOFF.md](docs/HANDOFF.md) for installation.

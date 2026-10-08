@@ -46,7 +46,7 @@ your-repository/
 │           ├── INSTALL.md
 │           ├── ARCHITECTURE.md
 │           ├── scripts/
-│           └── assets/packs/
+│           └── scripts/factum_lib/assets/packs/
 │
 └── data/
     ├── corpus.json
@@ -363,5 +363,18 @@ current pending submissions.
 - No automatic resolution of factual disagreements
 - No automatic Git operations or source acquisition
 
-The implementation needs local testing and representative-scale benchmarking
-before production or high-volume use. See [ARCHITECTURE.md](ARCHITECTURE.md).
+The synthetic external-host workflow is validated, including packaged CLI
+installation and two-site Git synchronization. See
+[validation results](docs/VALIDATION.md) and the
+[installation handoff](docs/HANDOFF.md) for the exact tested version.
+
+Run the reproducible checks from this toolkit checkout:
+
+```bash
+uv run --group dev pytest -q
+uv run --no-project tools/smoke_test.py
+```
+
+The smoke test uses disposable hosts and a local bare remote, never a real
+corpus. Representative-scale benchmarking remains necessary before
+high-volume use.

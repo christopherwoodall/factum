@@ -4,15 +4,17 @@ This document is for agents or operators setting up Factum in a host repository.
 
 It covers:
 
-1. Installing the skill.
+1. Installing the agent skill or Python CLI.
 2. Initializing or checking a corpus.
-3. Updating installed skill code.
+3. Updating installed code.
 4. Installing additive schema packs.
 5. Safely handling schema changes.
+6. Registering Factum in the host repository's agent instructions.
 
 For everyday evidence work, read [SKILL.md](SKILL.md).
 
-For pack design and tests, read [ARCHITECTURE.md](ARCHITECTURE.md).
+For pack design, architecture, and testing, read
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Scope and authorization
 
@@ -28,21 +30,70 @@ Do not interpret installation as permission to:
 - replace installed schemas;
 - delete pending work.
 
-Follow the user's authorization and host-repository rules.
+Follow the user's authorization and the host repository's rules.
 
 ## Requirements
 
 - Git
-- uv
 - Python 3.11 or later
 - Python's SQLite build with FTS5 and its trigram tokenizer
 - A host Git repository
+- uv for the documented installation and script workflows
 
 The public script declares its Python dependencies through inline uv metadata.
-A manually managed virtual environment is not required.
+A manually managed virtual environment is not required for that workflow.
 
 uv may need network access to obtain Python or dependencies, depending on the
 local environment. Use the environment's approved installation procedure.
+
+## Installation modes
+
+Factum supports two entry points.
+
+### Agent skill installation
+
+Clone Factum into the agent platform's skills directory.
+
+This provides:
+
+- `SKILL.md`;
+- installation and architecture documentation;
+- the uv script;
+- implementation code;
+- bundled seed schema packs.
+
+Run:
+
+```bash
+uv run <skill-directory>/scripts/factum.py \
+  --repo <host-repository> \
+  <command>
+```
+
+Use this mode when installing Factum as an agent skill.
+
+### Python CLI installation
+
+Installing the Python distribution provides:
+
+- the `factum` console command;
+- implementation code;
+- bundled seed schema packs.
+
+Run:
+
+```bash
+factum --repo <host-repository> <command>
+```
+
+A Python package installation does not register `SKILL.md` with the agent
+platform. It is a CLI installation, not automatic skill discovery.
+
+Both entry points use the same implementation and corpus format.
+
+Avoid accidentally running different toolkit versions against the same corpus.
+If both modes are installed, choose one entry point for normal use and record
+which installation is active.
 
 ## 1. Choose the host repository
 
@@ -56,12 +107,15 @@ host-repository/
 
 The installed Factum clone is not the corpus.
 
-The examples below use `.agents/skills/factum/`. Use the skills directory
+The skill examples below use `.agents/skills/factum/`. Use the skills directory
 recognized by the agent platform if it differs.
 
-## 2. Install the skill
+Factum stores corpus data under the host repository's root `data/`, not inside
+the installed skill directory.
 
-### Option A: local nested clone
+## 2. Install Factum
+
+### Option A: local nested skill clone
 
 From the host repository root:
 
@@ -86,9 +140,11 @@ git rev-parse --git-path info/exclude
 ```
 
 Append the line without overwriting existing contents. Adjust the path if the
-skill was installed elsewhere.
+skill is installed elsewhere.
 
-### Option B: shared, pinned submodule
+Do not blindly stage the nested repository.
+
+### Option B: shared, pinned skill submodule
 
 Use this instead of the plain-clone command:
 
@@ -99,12 +155,65 @@ git submodule add https://github.com/christopherwoodall/factum.git \
 
 This lets the host repository track an approved Factum revision.
 
-Choose one method. Do not create a nested clone and then accidentally stage
-it as an unmanaged embedded repository.
+Other checkouts will need the submodule initialized through their approved Git
+workflow.
+
+Choose either the plain-clone or submodule approach. Do not create a nested
+clone and accidentally stage it as an unmanaged embedded repository.
+
+### Option C: Python console command
+
+To install the CLI from an approved local Factum source directory:
+
+```bash
+uv tool install /absolute/path/to/factum
+```
+
+To install a prepared wheel:
+
+```bash
+uv tool install /absolute/path/to/factum_skill-0.2.0-py3-none-any.whl
+```
+
+Use the actual wheel filename produced for the approved release.
+
+Make sure uv's tool executable directory is on PATH using the environment's
+normal setup procedure.
+
+Then:
+
+```bash
+factum --help
+```
+
+This option does not create an agent skill directory or install `SKILL.md`
+into the agent host.
+
+For an agent that needs skill discovery, use Option A or B. The console
+installation is optional.
+
+### Where seed assets live
+
+In the source checkout, bundled packs live under:
+
+```text
+scripts/factum_lib/assets/packs/
+```
+
+They are included in the Python distribution and accessed as package resources.
+
+Initialization does not require a source clone when using the console command.
+
+Once initialized, the host corpus's installed packs are authoritative:
+
+```text
+data/schema-packs/
+data/schema-lock.json
+```
 
 ## 3. Check whether a corpus already exists
 
-From the host repository root:
+From the host repository root, using the skill:
 
 ```bash
 uv run .agents/skills/factum/scripts/factum.py status
@@ -118,11 +227,48 @@ uv run /path/to/factum/scripts/factum.py \
   status
 ```
 
+Using the installed CLI:
+
+```bash
+factum --repo /path/to/host-repository status
+```
+
 `FACTUM_REPO` can also identify the host repository.
 
 Place global options such as `--repo` and `--at` before the command.
 
+### Repository detection
+
+Without `--repo` or `FACTUM_REPO`:
+
+- The console command uses the current Git repository.
+- The clone-based script uses the current Git repository.
+- If the script is invoked inside its own nested skill checkout, it attempts
+  to find the containing host repository.
+
+The clone-based script refuses to initialize its own toolkit checkout as the
+corpus.
+
+When running from an unrelated directory or a standalone toolkit checkout,
+pass `--repo` explicitly.
+
 ## 4. Initialize or rebuild
+
+The remaining examples use the clone-based skill entry point.
+
+For the Python installation, replace:
+
+```text
+uv run .agents/skills/factum/scripts/factum.py
+```
+
+with:
+
+```text
+factum
+```
+
+Use `--repo` explicitly when not running from the host root.
 
 ### New corpus
 
@@ -135,20 +281,36 @@ uv run .agents/skills/factum/scripts/factum.py init
 Initialization:
 
 - creates the corpus identity;
-- copies seed packs into the host repository;
+- loads bundled seed packs through Python package resources;
+- copies those packs into the host repository;
+- verifies the copied pack inventory;
 - writes the schema lock;
 - creates local site metadata;
 - adds scoped ignore and artifact-preservation attributes;
 - builds SQLite;
 - leaves unrelated files and legacy directories alone.
 
-It does not commit, push, fetch, install hooks, or import old datasets.
+It does not:
+
+- commit or push;
+- fetch evidence;
+- configure remotes;
+- install hooks;
+- import legacy datasets;
+- edit the host `AGENTS.md`.
 
 ### Existing compatible corpus
 
-Do not replace its packs with the latest seed files.
+Initialization does not replace its schemas with the latest bundled seeds.
 
-Check and rebuild:
+When preparing a newly cloned corpus on a new machine, `init` can create missing
+local site metadata and rebuild the existing compatible corpus:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py init
+```
+
+For normal verification and index refresh:
 
 ```bash
 uv run .agents/skills/factum/scripts/factum.py verify
@@ -156,14 +318,25 @@ uv run .agents/skills/factum/scripts/factum.py rebuild
 uv run .agents/skills/factum/scripts/factum.py doctor
 ```
 
+Existing pending submissions are included during the current-state rebuild.
+
 ### Existing incompatible corpus
 
 The current implementation uses portable format `2`.
 
 Format `1` is not automatically migrated. Stop and report the incompatibility.
+
 Do not edit `corpus.json` merely to change its version number.
 
 A reviewed migration is separate development work.
+
+### Partial initialization
+
+If managed schema or record paths exist without `corpus.json`, initialization
+stops rather than guessing whether it should overwrite them.
+
+Inspect the partial state before recovery. Do not delete existing evidence or
+pending submissions to make initialization succeed.
 
 ## 5. Review initial setup
 
@@ -191,6 +364,13 @@ Inspect `doctor` output:
 SQLite capability is exercised during rebuild. If FTS5 or trigram support is
 missing, use a compatible Python/SQLite distribution.
 
+Initialization and rebuild must succeed before treating the installation as
+ready.
+
+Installed pack files are hash-pinned bytes. Initialization appends
+`data/schema-packs/** -text` to prevent Git newline normalization. Existing
+host Git configuration-file content is preserved.
+
 ## 6. Onboard the working agent
 
 Read [SKILL.md](SKILL.md).
@@ -206,17 +386,18 @@ The agent should then:
 7. Search the actual Factum corpus before making novelty claims.
 8. Keep interpretations separate from observations.
 9. Export and verify before Git synchronization.
+10. Register Factum in the host instructions using the section below.
 
 Raw files do not need to be opened simply because Factum has been installed.
 
-## Updating the skill code
+## Updating installed code
 
-Skill code and corpus schemas have separate lifecycles.
+Toolkit code and corpus schemas have separate lifecycles.
 
 ### Before updating
 
-- Identify the installed revision.
-- Check for local modifications to the installed skill.
+- Identify the active installation mode and revision or package version.
+- Check for local modifications to an installed source clone.
 - Check corpus status.
 - Export pending records when practical.
 - Preserve pending work and local-only evidence.
@@ -224,13 +405,22 @@ Skill code and corpus schemas have separate lifecycles.
 
 Do not overwrite a modified skill checkout.
 
-### Apply the approved code update
+### Apply the approved update
 
 For a plain clone, update the installed Factum Git repository using the
 approved revision and normal Git workflow.
 
 For a submodule, update its pinned revision through the host repository's
 approved workflow.
+
+For a Python CLI installation, reinstall the approved source or wheel using
+the environment's tool-management procedure. For example:
+
+```bash
+uv tool install --force /absolute/path/to/approved-factum.whl
+```
+
+Use the actual approved artifact path.
 
 There is no `factum update` command.
 
@@ -242,6 +432,14 @@ uv run .agents/skills/factum/scripts/factum.py rebuild
 uv run .agents/skills/factum/scripts/factum.py doctor
 ```
 
+For a console installation:
+
+```bash
+factum --repo /path/to/host-repository verify
+factum --repo /path/to/host-repository rebuild
+factum --repo /path/to/host-repository doctor
+```
+
 A toolkit update must not silently replace:
 
 ```text
@@ -249,7 +447,7 @@ data/schema-packs/
 data/schema-lock.json
 ```
 
-Stop on incompatibility instead of copying new assets over old schemas.
+Stop on incompatibility instead of copying new bundled assets over old schemas.
 
 ## Installing a new schema pack
 
@@ -265,8 +463,8 @@ Schema packs may add:
 They cannot add arbitrary Python execution, storage providers, or new core
 record kinds.
 
-Use `tags` for one-off metadata. Do not create a schema pack for every
-temporary annotation.
+Use `tags` for one-off metadata. Do not create a schema pack for every temporary
+annotation.
 
 ### Step 1: inspect existing assignments
 
@@ -304,12 +502,14 @@ schema-proposals/
             └── webhook-capture.schema.json
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the manifest and definition contracts.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for manifest and definition contracts.
 
 The agent handles obtaining the pack. Factum does not download packs.
 
 Review unfamiliar packs before activation. Data-only packs still influence
 validation, matching, and reference interpretation.
+
+Do not put proposal changes directly into `data/schema-packs/`.
 
 ### Step 3: preview installation
 
@@ -337,13 +537,18 @@ This is not a substitute for testing real example bundles.
 
 Before installing a nontrivial pack into an important corpus:
 
-1. Initialize a disposable host repository.
-2. Install required dependency packs.
-3. Install the candidate.
-4. Submit positive example bundles.
-5. Confirm malformed bundles fail.
-6. Export, verify, and rebuild.
-7. Retrieve records and check their schema assignments.
+1. Initialize a disposable host Git repository.
+2. Initialize its Factum corpus.
+3. Install required dependency packs.
+4. Install the candidate.
+5. Submit positive example bundles.
+6. Confirm malformed bundles fail.
+7. Export, verify, and rebuild.
+8. Retrieve records and check schema assignments and references.
+
+Use the installed script with explicit `--repo`, or the console command.
+
+Do not initialize the Factum source checkout as the test corpus.
 
 Never use the production corpus as the only pack test environment.
 
@@ -390,29 +595,33 @@ The lock pins its file contents. Modification produces schema drift.
 
 Create a pack containing only new schema IDs and new type names.
 
-The current installer does not replace installed packs. Multiple versions
-can remain installed, but duplicate definitions are rejected even when
-their contents are identical.
+The current installer does not replace installed packs. Multiple versions can
+remain installed, but duplicate definitions are rejected even when their
+contents are identical.
 
 Therefore, copying an entire installed pack, changing its version, and
-reinstalling it usually fails because it repeats existing schema IDs and
-type names.
+reinstalling it usually fails because it repeats existing schema IDs and type
+names.
 
-A simple supported pattern is a new extension pack:
+A supported pattern is a new extension pack:
 
 ```text
 research-webhooks-extra/1.0.0/
 ```
 
-It can depend on:
+It can declare this manifest dependency:
 
 ```json
 {
-  "research-webhooks": "1.0.0"
+  "requires": {
+    "research-webhooks": "1.0.0"
+  }
 }
 ```
 
-It must declare only its additions.
+This is a manifest fragment, not a complete manifest.
+
+The extension must declare only its additions.
 
 ### Breaking change to a type
 
@@ -435,56 +644,14 @@ Do not:
 
 - edit locked core schemas;
 - rewrite old records to make them validate;
-- recompute hashes to conceal a changed history;
-- remove old packs still needed by records.
-
-## Recovery
-
-### `INDEX_STALE` or `INDEX_MISSING`
-
-Run `rebuild`.
-
-### Schema drift
-
-Restore the intended pack bytes and corresponding lock from an approved Git
-state. Do not regenerate hashes just to accept an unexplained change.
-
-### Interrupted pack installation
-
-The lock is the activation point.
-
-A copied but unlocked pack directory is inactive. Retry installation from the
-same unchanged candidate.
-
-If the directory differs, stop and inspect it.
-
-### Pack activated but rebuild failed
-
-Inspect the error and retry `rebuild` after correcting the underlying problem.
-
-Do not assume that an error means the pack was not activated.
-
-### Missing artifact bytes
-
-A metadata-only clone may not contain another site's local-only bytes.
-
-Report the limitation. Do not silently fetch a live replacement and present
-it as the original capture.
-
-### Removing or reinstalling the skill
-
-Preserve the host `data/` directory.
-
-In particular, preserve pending submissions and local-only bytes. They may
-not exist in Git.
-
-
----
+- recompute hashes to conceal changed history;
+- remove old packs still needed by records;
+- relabel a corpus format without migrating its actual records.
 
 ## Register Factum in the host repository's agent instructions
 
-After successful setup, make Factum discoverable to future agents by adding
-a short integration block to the host repository's root `AGENTS.md`.
+After successful setup, make Factum discoverable to future agents by adding a
+short integration block to the host repository's root `AGENTS.md`.
 
 This is an agent-managed documentation step. The current `init` command does
 not modify `AGENTS.md`.
@@ -510,7 +677,8 @@ Do not create competing instruction files without a reason.
 6. Identify conflicting storage instructions.
 7. Update those conflicts when authorized, or report them before using Factum
    as the required storage path.
-8. Review the diff. Do not commit or push automatically.
+8. Review the diff.
+9. Do not commit or push automatically.
 
 A bottom-of-file block does not safely resolve contradictory earlier
 instructions.
@@ -558,20 +726,160 @@ operations remain authoritative.
 <!-- END FACTUM INTEGRATION -->
 ```
 
+For a CLI-only installation, do not insert nonexistent skill paths. Document
+the actual `factum --repo ...` command and an accessible, approved copy of the
+operating instructions instead.
+
+A CLI-only installation still does not register an agent skill automatically.
+
 ### Existing or nested instructions
 
 Check whether more-specific agent instructions apply in the directories where
 the agent will work.
 
-Do not silently overwrite those files. Report or reconcile conflicting
-storage guidance when authorized.
+Do not silently overwrite those files. Report or reconcile conflicting storage
+guidance when authorized.
 
 ### Completion report
 
 Report:
 
+- installation mode;
+- installed revision or package version;
+- host repository and corpus location;
 - which host instruction file was updated;
-- the installed skill path;
-- whether an existing block was updated or a new one was added;
+- the installed skill path or CLI entry point;
+- whether an existing integration block was updated or a new one was added;
 - any conflicting instructions that remain;
-- whether legacy material is still outside Factum's indexed scope.
+- whether legacy material remains outside Factum's indexed scope.
+
+## Recovery
+
+### `INDEX_STALE` or `INDEX_MISSING`
+
+Run `rebuild`.
+
+Do not delete pending submissions.
+
+### Schema drift
+
+Restore the intended pack bytes and corresponding lock from an approved Git
+state.
+
+Do not regenerate hashes just to accept an unexplained change.
+
+If an earlier installation used `data/schema-packs/** text eol=lf`, run `init`
+on a currently valid corpus to append the preservation rule. If normalization
+has already changed pack bytes, first restore the exact locked bytes from an
+approved copy. Do not silently rewrite the lock to accept drift.
+
+### Interrupted pack installation
+
+The lock is the activation point.
+
+A copied but unlocked pack directory is inactive. Retry installation from the
+same unchanged candidate.
+
+If the directory differs, stop and inspect it.
+
+### Pack activated but rebuild failed
+
+Inspect the error and retry `rebuild` after correcting the underlying problem.
+
+Do not assume that an error means the pack was not activated.
+
+### Partial initial setup
+
+Initialization can fail after some managed files have been created.
+
+If `corpus.json` is absent but managed pack or record paths exist, the next
+initialization stops for inspection.
+
+Do not remove those paths automatically. Determine whether they are failed
+initialization output or pre-existing data before recovery.
+
+### Missing bundled schema packs
+
+A correctly built distribution contains its seed packs.
+
+If initialization reports missing bundled resources:
+
+1. Confirm which script or console installation is being executed.
+2. Confirm that the installation is the intended release.
+3. Reinstall a corrected, tested source checkout or distribution.
+4. Do not work around the defect by copying unknown schemas into the corpus.
+
+For developers, run the packaging acceptance checks below.
+
+### Missing artifact bytes
+
+A metadata-only clone may not contain another site's local-only bytes.
+
+Report the limitation. Do not silently fetch a live replacement and present it
+as the original capture.
+
+### Removing or reinstalling Factum
+
+Preserve the host `data/` directory.
+
+In particular, preserve pending submissions and local-only bytes. They may not
+exist in Git.
+
+SQLite can be rebuilt. Local-only evidence and pending records cannot
+necessarily be recovered from the repository.
+
+## Packaging acceptance checks for maintainers
+
+This section applies to agents preparing a release, not ordinary research
+agents installing an approved version.
+
+Do not validate packaging with an editable installation alone.
+
+Run the automated acceptance workflow from the toolkit checkout:
+
+```bash
+uv run --group dev pytest -q
+uv run --no-project tools/smoke_test.py
+```
+
+It snapshots current source, installs real nested clones, tests a pinned
+submodule, builds wheel/sdist artifacts, installs a rebuilt wheel into a clean
+environment, and exercises `uv tool install` in isolated tool directories.
+All Git synchronization stays inside its disposable local workspace.
+The environment must already have a configured Git identity for fixture
+commits. The test tooling does not change identity configuration.
+
+See [docs/HANDOFF.md](docs/HANDOFF.md) for a complete synthetic example and
+[docs/VALIDATION.md](docs/VALIDATION.md) for executed results.
+
+Before declaring a release ready:
+
+1. Build a wheel and source distribution.
+2. Inspect the wheel for every manifest-declared seed file.
+3. Build a second wheel from the source distribution.
+4. Install that wheel into a clean tool or virtual environment.
+5. Run `factum --repo <temporary-host> init` from outside the source checkout.
+6. Confirm copied packs, schema assignments, and the lock validate.
+7. Run capture, export, verification, and rebuild through the console command.
+8. Run the equivalent workflow through a nested clone's uv script.
+9. Confirm both entry points initialize equivalent schema catalogs.
+10. Record the exact tested code revision and distribution artifact.
+
+The console-command test must not depend on access to the development
+checkout's assets.
+
+The source layout for bundled resources is:
+
+```text
+scripts/
+└── factum_lib/
+    ├── resources.py
+    └── assets/
+        └── packs/
+```
+
+Changing the seed-pack layout requires updating package-data configuration and
+packaging tests together.
+
+Do not claim that wheel installation or initialization passed unless the
+commands were actually executed.

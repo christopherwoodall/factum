@@ -14,6 +14,8 @@ from . import FORMAT_VERSION, TOOLKIT_VERSION
 from .schemas import (
     CORE, KINDS, SchemaError, canonical, install_pack,
     parse_json, read_json, write_json_atomic,
+    checked_path,
+    durable_mkdir,
 )
 from .store import (
     FactumError, State, add_bundle, atomic_bytes, export_pending,
@@ -155,6 +157,8 @@ def match(state, args):
         fail("QUERY", "A nonempty value is required.")
     if value_type is not None and not isinstance(value_type, str):
         fail("QUERY", "type must be a string.")
+    if value_type is not None and value_type not in state.catalog.definitions["observable"] and value_type != "source":
+        fail("QUERY", "Unknown search value type.")
     if mode not in {"exact", "key", "fuzzy"}:
         fail("QUERY", "Invalid mode.")
     if type(limit) is not int or not 1 <= limit <= 200:
@@ -368,6 +372,17 @@ def graph(state, args):
             frontier = following
             if not frontier or truncated:
                 break
+        if frontier and not truncated:
+            # A depth budget can omit edges just as an edge budget can.
+            truncated = any(
+                row["id"] not in edges
+                for node in sorted(frontier)
+                for row in db.execute(
+                    "SELECT id FROM edges WHERE subject_id=? OR object_id=? "
+                    "ORDER BY id LIMIT ?",
+                    (node, node, args.limit + 1),
+                )
+            )
         return {
             "nodes": sorted(visited),
             "edges": list(edges.values()),
@@ -442,7 +457,9 @@ def lane_command(state, args):
         state.catalog.validate(CORE["lane"], lane)
         slug = re.sub(r"[^a-z0-9]+", "-", args.title.lower()).strip("-") or "lane"
         directory = state.data / "lanes" / f"{day}-{slug[:60]}-{lane['id'][-8:]}"
-        directory.mkdir(parents=True, exist_ok=False)
+        if directory.exists():
+            fail("LANE_CONFLICT", "Lane directory already exists.")
+        durable_mkdir(directory)
         write_json_atomic(directory / "lane.json", lane)
         for filename, text in {
             "README.md": f"# {args.title}\n\n",
@@ -602,7 +619,7 @@ def dispatch(repo, args):
             "repo": str(repo),
         }
 
-    if not (repo / "data/corpus.json").exists():
+    if not args.at and not (repo / "data/corpus.json").exists():
         if args.command in {"status", "doctor"}:
             return {"initialized": False, "next": "init"}
         fail("NOT_INITIALIZED", "Run init.")
@@ -776,8 +793,8 @@ def main():
     args = parser().parse_args()
     try:
         repo = resolve_repo(args.repo)
-        lock = repo / "data/.local/writer.lock"
-        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock = checked_path(repo, "data/.local/writer.lock")
+        durable_mkdir(lock.parent)
         with FileLock(str(lock), timeout=30):
             emit(dispatch(repo, args))
     except FactumError as error:

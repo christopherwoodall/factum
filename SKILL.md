@@ -15,6 +15,8 @@ query external services, or perform Git operations.
 
 ## Invocation
 
+### Default: installed agent skill
+
 Resolve `scripts/factum.py` relative to this installed skill directory.
 
 ```bash
@@ -23,14 +25,60 @@ uv run <skill-directory>/scripts/factum.py \
   <command>
 ```
 
-The host repository owns `data/`. Do not initialize the installed Factum clone
-as the corpus.
+This is the default entry point for agents using the cloned skill. A separate
+Python package installation is not required.
+
+### Optional: installed console command
+
+If the operator has installed and selected the Python CLI, use:
+
+```bash
+factum --repo <host-repository> <command>
+```
+
+The console command and uv script use the same implementation and corpus
+format. However, separately installed copies can have different toolkit
+versions. Use one selected entry point consistently; do not switch silently.
+
+Installing the Python CLI does not register this skill with the agent host.
+
+### Host repository
+
+The host repository owns `data/`.
+
+Always pass `--repo` explicitly in automated agent workflows. Do not initialize
+the installed Factum clone as the corpus.
 
 Global options such as `--repo` and `--at` precede the command.
 
-Read [INSTALL.md](INSTALL.md) for initial setup, skill updates, and schema-pack
-installation. Read [ARCHITECTURE.md](ARCHITECTURE.md) only when authoring packs,
-debugging integrity issues, or working on implementation details.
+For development smoke tests, use a separate disposable host Git repository,
+not the Factum source checkout.
+
+Read [INSTALL.md](INSTALL.md) for setup, code updates, and schema-pack
+installation. Read [ARCHITECTURE.md](ARCHITECTURE.md) when authoring packs,
+debugging integrity issues, or changing implementation details.
+
+## Code and schema versions
+
+Seed schema packs are bundled with the toolkit. Initialization can load them
+through either supported entry point.
+
+After initialization, the corpus's installed packs and lock are authoritative:
+
+- `data/schema-packs/`
+- `data/schema-lock.json`
+
+Updating the toolkit does not update those corpus schemas.
+
+Do not read bundled seed files as a substitute for inspecting the active
+corpus. Use `schema list`, `schema assigned`, and `schema describe`.
+
+If bundled resources are missing, report an incomplete installation and follow
+INSTALL.md. Do not copy arbitrary schemas into the corpus to bypass the error.
+
+After an approved toolkit update, run `verify`, `rebuild`, and `doctor` using
+the selected entry point. Stop on incompatibility rather than silently
+migrating data.
 
 ## Start of session
 
@@ -40,6 +88,10 @@ Run `status`.
 - If stale, run `rebuild`.
 - If incompatible, stop and report the error.
 - Never delete pending records to make a command succeed.
+
+A retry with the same request key returns original IDs. If an earlier command
+failed after accepting pending work, still run `rebuild` when the index is
+missing or stale.
 
 Read command JSON. Failures return `ok: false`. Help and argument-parser errors
 are CLI output, not operation results.
@@ -253,6 +305,9 @@ Use separate worktrees for concurrent workers.
 
 ## /factum requests
 
+Run each mapped command through the selected entry point with an explicit
+host `--repo`. `/factum` is an agent-facing request convention; it does not require the `factum` console command to be installed.
+
 Map agent-facing requests to the toolkit:
 
 | Request | Action |
@@ -269,3 +324,5 @@ Map agent-facing requests to the toolkit:
 | `/factum query ...` | Build a supported structured query and run `query --input` |
 
 Native slash-command registration is host-specific.
+
+For a complete synthetic walkthrough, see [docs/HANDOFF.md](docs/HANDOFF.md).
