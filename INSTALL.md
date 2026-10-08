@@ -367,6 +367,10 @@ missing, use a compatible Python/SQLite distribution.
 Initialization and rebuild must succeed before treating the installation as
 ready.
 
+Installed pack files are hash-pinned bytes. Initialization appends
+`data/schema-packs/** -text` to prevent Git newline normalization. Existing
+host Git configuration-file content is preserved.
+
 ## 6. Onboard the working agent
 
 Read [SKILL.md](SKILL.md).
@@ -764,6 +768,11 @@ state.
 
 Do not regenerate hashes just to accept an unexplained change.
 
+If an earlier installation used `data/schema-packs/** text eol=lf`, run `init`
+on a currently valid corpus to append the preservation rule. If normalization
+has already changed pack bytes, first restore the exact locked bytes from an
+approved copy. Do not silently rewrite the lock to accept drift.
+
 ### Interrupted pack installation
 
 The lock is the activation point.
@@ -825,6 +834,23 @@ This section applies to agents preparing a release, not ordinary research
 agents installing an approved version.
 
 Do not validate packaging with an editable installation alone.
+
+Run the automated acceptance workflow from the toolkit checkout:
+
+```bash
+uv run --group dev pytest -q
+uv run --no-project tools/smoke_test.py
+```
+
+It snapshots current source, installs real nested clones, tests a pinned
+submodule, builds wheel/sdist artifacts, installs a rebuilt wheel into a clean
+environment, and exercises `uv tool install` in isolated tool directories.
+All Git synchronization stays inside its disposable local workspace.
+The environment must already have a configured Git identity for fixture
+commits. The test tooling does not change identity configuration.
+
+See [docs/HANDOFF.md](docs/HANDOFF.md) for a complete synthetic example and
+[docs/VALIDATION.md](docs/VALIDATION.md) for executed results.
 
 Before declaring a release ready:
 

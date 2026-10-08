@@ -19,6 +19,9 @@ from .schemas import (
     KINDS,
     Catalog,
     canonical,
+    checked_path,
+    durable_mkdir,
+    no_symlink_path,
     pack_inventory,
     parse_json,
     read_json,
@@ -51,8 +54,8 @@ def digest(value):
 
 
 def atomic_bytes(path, raw):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = no_symlink_path(path)
+    durable_mkdir(path.parent)
 
     fd, temporary = tempfile.mkstemp(
         prefix=".factum-",
@@ -73,15 +76,14 @@ def atomic_bytes(path, raw):
 
 
 def append_lines(path, lines):
-    path = Path(path)
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    path = no_symlink_path(path)
+    old = path.read_bytes() if path.exists() else b""
     existing = set(old.splitlines())
-    missing = [line for line in lines if line not in existing]
+    missing = [line.encode("utf-8") for line in lines if line.encode("utf-8") not in existing]
 
     if missing:
-        separator = "" if not old or old.endswith("\n") else "\n"
-        text = old + separator + "\n".join(missing) + "\n"
-        atomic_bytes(path, text.encode("utf-8"))
+        separator = b"" if not old or old.endswith(b"\n") else b"\n"
+        atomic_bytes(path, old + separator + b"\n".join(missing) + b"\n")
 
 
 def git(repo, *args):
@@ -196,6 +198,7 @@ def initialize(repo):
     Existing corpus schemas are never reseeded by this function.
     """
     repo = Path(repo)
+    check_layout(repo)
     data = repo / "data"
     corpus_path = data / "corpus.json"
 
@@ -226,9 +229,16 @@ def initialize(repo):
 
                 entry = pack_inventory(source)
                 destination = data / entry["path"]
-                destination.parent.mkdir(parents=True, exist_ok=True)
+                durable_mkdir(destination.parent)
 
                 shutil.copytree(source, destination)
+                for relative in entry["files"]:
+                    installed = checked_path(destination, relative)
+                    with installed.open("rb") as stream:
+                        os.fsync(stream.fileno())
+                    sync_directory(installed.parent)
+                sync_directory(destination)
+                sync_directory(destination.parent)
 
                 # Verify the actual installed copy, not only the source.
                 if pack_inventory(destination) != entry:
@@ -285,7 +295,7 @@ def initialize(repo):
             "data/blobs/** -text -diff",
             "data/records/**/*.jsonl text eol=lf",
             "data/records/**/*.json text eol=lf",
-            "data/schema-packs/** text eol=lf",
+            "data/schema-packs/** -text",
             "data/schema-lock.json text eol=lf",
         ],
     )
@@ -387,6 +397,16 @@ def make_record(kind, body, actor, tags=None, record_id=None):
     return record
 
 
+def check_layout(repo):
+    for relative in (
+        "data", "data/corpus.json", "data/schema-lock.json", "data/schema-packs",
+        "data/records", "data/lanes", "data/blobs", "data/.local",
+        "data/.local/pending", "data/.local/blobs", "data/.local/tmp",
+        "data/.local/snapshots", "data/.local/factum.db", "data/.local/site.json",
+    ):
+        checked_path(repo, relative)
+
+
 class State:
     def __init__(self, repo, revision=None):
         self.repo = Path(repo)
@@ -443,7 +463,7 @@ class State:
                 f"{self.revision}:{path}",
             )
 
-        file = self.repo / path
+        file = checked_path(self.repo, path)
         resolved = file.resolve()
 
         if self.data.resolve() not in resolved.parents:
@@ -471,7 +491,7 @@ class State:
                 and path.endswith(suffix)
             )
 
-        root = self.repo / prefix
+        root = checked_path(self.repo, prefix)
 
         if not root.exists():
             return []
@@ -559,6 +579,16 @@ class State:
         ):
             fail("RECEIPT", "Invalid receipt.")
 
+        result = receipt["result"]
+        if (
+            not receipt["key"]
+            or not isinstance(result.get("ids"), dict)
+            or not all(isinstance(key, str) and isinstance(value, str) for key, value in result["ids"].items())
+            or not isinstance(result.get("record_ids"), list)
+            or not all(isinstance(value, str) for value in result["record_ids"])
+        ):
+            fail("RECEIPT", "Invalid receipt result IDs.")
+
         old = self.receipts.get(receipt["key"])
 
         if old is not None and old != receipt:
@@ -567,6 +597,7 @@ class State:
         self.receipts[receipt["key"]] = receipt
 
     def load(self):
+        check_layout(self.repo)
         self.corpus = self.json("data/corpus.json")
 
         if self.corpus.get("format_version") != FORMAT_VERSION:
@@ -812,7 +843,8 @@ class State:
                         fail("TIME", "Event end precedes start.")
 
         for receipt in self.receipts.values():
-            for node_id in receipt["result"].get("ids", {}).values():
+            result = receipt["result"]
+            for node_id in [*result["ids"].values(), *result["record_ids"]]:
                 check(node_id, ["*"])
 
     def search_entries(self, record):
@@ -846,7 +878,8 @@ class State:
         return []
 
     def project(self):
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        no_symlink_path(self.db_path)
+        durable_mkdir(self.db_path.parent)
 
         temporary = self.db_path.with_name(
             self.db_path.name + "." + uuid.uuid4().hex
@@ -992,6 +1025,7 @@ class State:
                 temporary.unlink()
 
     def connect(self):
+        no_symlink_path(self.db_path)
         if not self.db_path.exists():
             fail("INDEX_MISSING", "Run rebuild.")
 
@@ -1048,9 +1082,9 @@ class State:
 
             path = next(
                 (
-                    root / relative
+                    checked_path(root, relative)
                     for root in roots
-                    if (root / relative).is_file()
+                    if checked_path(root, relative).is_file()
                 ),
                 None,
             )
@@ -1073,7 +1107,7 @@ class State:
 
     def verify_blobs(self):
         missing = []
-        verified = set()
+        verified = {}
 
         for record in self.records.values():
             if (
@@ -1085,11 +1119,13 @@ class State:
             value = record["body"]["sha256"]
 
             if value in verified:
+                if record["body"]["size"] != verified[value]:
+                    fail("HASH", record["id"])
                 continue
 
             try:
                 self.artifact_bytes(record["id"])
-                verified.add(value)
+                verified[value] = record["body"]["size"]
             except FactumError as error:
                 if error.code != "ARTIFACT_MISSING":
                     raise
@@ -1102,6 +1138,7 @@ class State:
 
 
 def store_file(state, filename, storage):
+    check_layout(state.repo)
     if storage not in {"git", "local"}:
         fail("STORAGE", "Storage must be git or local.")
 
@@ -1111,7 +1148,7 @@ def store_file(state, filename, storage):
         fail("FILE", str(source))
 
     directory = state.local / "tmp"
-    directory.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(directory)
 
     fd, temporary = tempfile.mkstemp(
         prefix="artifact-",
@@ -1137,7 +1174,7 @@ def store_file(state, filename, storage):
         destination = (
             root / "blobs/sha256" / value[:2] / value
         )
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        durable_mkdir(destination.parent)
 
         if destination.exists():
             if destination.is_symlink():
@@ -1169,6 +1206,7 @@ def store_file(state, filename, storage):
 
 
 def add_bundle(state, submitted):
+    check_layout(state.repo)
     state.catalog.validate(CORE["bundle"], submitted)
     bundle = copy.deepcopy(submitted)
     file_bodies = {}
@@ -1355,6 +1393,7 @@ def add_bundle(state, submitted):
 
 
 def export_pending(state):
+    check_layout(state.repo)
     exported = []
 
     for pending_path, pending in state.pending:
@@ -1384,7 +1423,7 @@ def export_pending(state):
                 fail("BATCH_CONFLICT", batch_id)
         else:
             staging_root = state.local / "tmp"
-            staging_root.mkdir(parents=True, exist_ok=True)
+            durable_mkdir(staging_root)
 
             staging = Path(
                 tempfile.mkdtemp(
@@ -1403,10 +1442,7 @@ def export_pending(state):
                     manifest,
                 )
 
-                destination.parent.mkdir(
-                    parents=True,
-                    exist_ok=True,
-                )
+                durable_mkdir(destination.parent)
 
                 os.replace(staging, destination)
                 sync_directory(destination.parent)

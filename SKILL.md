@@ -58,8 +58,6 @@ Read [INSTALL.md](INSTALL.md) for setup, code updates, and schema-pack
 installation. Read [ARCHITECTURE.md](ARCHITECTURE.md) when authoring packs,
 debugging integrity issues, or changing implementation details.
 
-## Start of session
-
 ## Code and schema versions
 
 Seed schema packs are bundled with the toolkit. Initialization can load them
@@ -82,12 +80,18 @@ After an approved toolkit update, run `verify`, `rebuild`, and `doctor` using
 the selected entry point. Stop on incompatibility rather than silently
 migrating data.
 
+## Start of session
+
 Run `status`.
 
 - If uninitialized, follow INSTALL.md.
 - If stale, run `rebuild`.
 - If incompatible, stop and report the error.
 - Never delete pending records to make a command succeed.
+
+A retry with the same request key returns original IDs. If an earlier command
+failed after accepting pending work, still run `rebuild` when the index is
+missing or stale.
 
 Read command JSON. Failures return `ok: false`. Help and argument-parser errors
 are CLI output, not operation results.
@@ -320,3 +324,5 @@ Map agent-facing requests to the toolkit:
 | `/factum query ...` | Build a supported structured query and run `query --input` |
 
 Native slash-command registration is host-specific.
+
+For a complete synthetic walkthrough, see [docs/HANDOFF.md](docs/HANDOFF.md).

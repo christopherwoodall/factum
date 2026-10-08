@@ -1,9 +1,8 @@
 """Resolve plugin assets and the host repository without changing the FS."""
 
-import os
 from pathlib import Path
 
-from .schemas import fail
+from .store import fail, resolve_repo
 
 
 def skill_root():
@@ -13,7 +12,7 @@ def skill_root():
 
 def assets_root():
     """Support both a cloned skill and a built Python package."""
-    cloned = skill_root() / "assets"
+    cloned = Path(__file__).resolve().parent / "assets"
     if cloned.is_dir():
         return cloned
 
@@ -49,41 +48,5 @@ def enclosing_repository(start, excluded=None):
 
 
 def resolve_repository(explicit=None):
-    """
-    Resolution order:
-    1. --repo
-    2. FACTUM_REPO
-    3. Repository enclosing the installed plugin
-    4. Repository enclosing the working directory
-
-    The plugin's own checkout is never an implicit corpus target.
-    """
-    plugin = skill_root()
-
-    configured = explicit if explicit is not None else os.environ.get(
-        "FACTUM_REPO"
-    )
-    if configured is not None:
-        path = Path(configured).expanduser().resolve()
-        if not path.is_dir():
-            fail("REPOSITORY_MISSING", str(path))
-        if not is_repository(path):
-            fail(
-                "NOT_A_REPOSITORY",
-                f"Expected a Git repository root: {path}",
-            )
-        return path
-
-    host = enclosing_repository(plugin.parent, excluded={plugin})
-    if host is not None:
-        return host
-
-    host = enclosing_repository(Path.cwd(), excluded={plugin})
-    if host is not None:
-        return host
-
-    fail(
-        "HOST_REPOSITORY_NOT_FOUND",
-        "No host repository was found. Run from the target repository "
-        "or pass --repo <repository-root>.",
-    )
+    """Use the same host resolution and toolkit refusal as the public CLI."""
+    return resolve_repo(explicit)

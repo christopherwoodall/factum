@@ -65,9 +65,27 @@ def read_json(path):
     return parse_json(Path(path).read_bytes())
 
 
+def no_symlink_path(path):
+    """Reject a symlink at any component before managed filesystem access."""
+    path = Path(path).absolute()
+    for component in (*reversed(path.parents), path):
+        if component.is_symlink():
+            raise SchemaError(f"Symlinked managed path: {component}")
+    return path
+
+
+def checked_path(root, relative):
+    relative = safe_relative(relative)
+    root = no_symlink_path(root)
+    path = no_symlink_path(root / relative)
+    if root.resolve() not in path.resolve().parents:
+        raise SchemaError(f"Path escapes its root: {relative}")
+    return path
+
+
 def write_json_atomic(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = no_symlink_path(path)
+    durable_mkdir(path.parent)
     fd, temporary = tempfile.mkstemp(prefix=".factum-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -88,6 +106,19 @@ def sync_directory(path):
             os.fsync(fd)
         finally:
             os.close(fd)
+
+
+def durable_mkdir(path):
+    """Persist newly created directory entries as well as their eventual files."""
+    path = no_symlink_path(path)
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in reversed(missing):
+        sync_directory(directory.parent)
 
 
 def safe_relative(value):
@@ -138,7 +169,7 @@ def manifest_validate(value):
 
 
 def pack_inventory(directory):
-    directory = Path(directory).resolve()
+    directory = no_symlink_path(directory).resolve()
     manifest_path = directory / "pack.json"
     if manifest_path.is_symlink():
         raise SchemaError("Symlinked pack files are not permitted.")
@@ -148,7 +179,7 @@ def pack_inventory(directory):
     names = ["pack.json", *manifest["schemas"], *manifest["definitions"]]
     files = {}
     for name in names:
-        path = directory / safe_relative(name)
+        path = checked_path(directory, name)
         if not path.is_file() or path.is_symlink():
             raise SchemaError(f"Missing or symlinked pack file: {name}")
         if directory not in path.resolve().parents:
@@ -271,8 +302,8 @@ class Catalog:
     def from_repo(cls, repo):
         repo = Path(repo)
         return cls(
-            lambda path: (repo / path).read_bytes(),
-            read_json(repo / "data/schema-lock.json"),
+            lambda path: checked_path(repo, path).read_bytes(),
+            read_json(checked_path(repo, "data/schema-lock.json")),
         )
 
     def resolve(self, reference, base):
@@ -312,16 +343,30 @@ class Catalog:
                     if self.contains_reference_annotation(target, target_base, seen):
                         return True
             return any(
-                self.contains_reference_annotation(item, base, seen)
-                for key, item in value.items()
-                if key != "$ref"
-            )
-        if isinstance(value, list):
-            return any(
-                self.contains_reference_annotation(item, base, seen)
-                for item in value
+                self.contains_reference_annotation(child, base, seen)
+                for _, child in self.schema_children(value)
             )
         return False
+
+    @staticmethod
+    def schema_children(schema):
+        """Yield schema locations, never instance data or property-name maps."""
+        maps = ("properties", "patternProperties", "$defs", "dependentSchemas")
+        arrays = ("allOf", "anyOf", "oneOf", "prefixItems")
+        singles = (
+            "items", "additionalProperties", "unevaluatedProperties",
+            "additionalItems", "unevaluatedItems", "contains",
+            "propertyNames", "if", "then", "else", "not", "contentSchema",
+        )
+        for keyword in maps:
+            for child in schema.get(keyword, {}).values():
+                yield keyword, child
+        for keyword in arrays:
+            for child in schema.get(keyword, []):
+                yield keyword, child
+        for keyword in singles:
+            if keyword in schema:
+                yield keyword, schema[keyword]
 
     def inspect_schema(self, value, base, root=True):
         if isinstance(value, dict):
@@ -343,24 +388,19 @@ class Catalog:
                 ):
                     raise SchemaError("Invalid x-factum-target-kinds annotation.")
 
-            unsupported = (
+            unsupported = {
                 "oneOf", "anyOf", "if", "then", "else", "not",
                 "patternProperties", "additionalProperties",
-                "unevaluatedProperties", "contains",
-            )
-            for keyword in unsupported:
-                if keyword in value and self.contains_reference_annotation(
-                    value[keyword], base
-                ):
+                "unevaluatedProperties", "contains", "dependentSchemas",
+                "propertyNames", "unevaluatedItems", "additionalItems", "contentSchema",
+            }
+            for keyword, child in self.schema_children(value):
+                if keyword in unsupported and self.contains_reference_annotation(child, base):
                     raise SchemaError(
                         f"Reference annotations under {keyword} are unsupported; "
                         "put reference fields in properties/items/allOf."
                     )
 
-            for child in value.values():
-                self.inspect_schema(child, base, root=False)
-        elif isinstance(value, list):
-            for child in value:
                 self.inspect_schema(child, base, root=False)
 
     def add_definition(self, definition):
@@ -431,7 +471,8 @@ class Catalog:
         if errors:
             error = errors[0]
             path = "/".join(map(str, error.absolute_path))
-            raise SchemaError(f"{schema_id}/{path}: {error.message}")
+            # Validator messages can contain raw evidence, including tokens.
+            raise SchemaError(f"{schema_id}/{path}: validation failed ({error.validator}).")
 
     def assign(self, kind, body):
         if kind == "observable":
@@ -519,8 +560,8 @@ class Catalog:
 
 def install_pack(repo, source, approve=False):
     repo = Path(repo)
-    source = Path(source).resolve()
-    lock_path = repo / "data/schema-lock.json"
+    source = no_symlink_path(source).resolve()
+    lock_path = checked_path(repo, "data/schema-lock.json")
     lock = read_json(lock_path)
     entry = pack_inventory(source)
 
@@ -537,20 +578,20 @@ def install_pack(repo, source, approve=False):
     proposed["packs"].append(entry)
     proposed["packs"].sort(key=lambda item: (item["name"], item["version"]))
 
-    destination = repo / "data" / entry["path"]
+    destination = checked_path(repo, "data/" + entry["path"])
     prefix = f"data/{entry['path']}/"
 
     def proposed_read(path):
         if path.startswith(prefix):
-            return (source / path.removeprefix(prefix)).read_bytes()
-        return (repo / path).read_bytes()
+            return checked_path(source, path.removeprefix(prefix)).read_bytes()
+        return checked_path(repo, path).read_bytes()
 
     Catalog(proposed_read, proposed)
 
     if not approve:
         return {"installed": False, "valid": True, "requires": "--approve", "pack": entry}
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(destination.parent)
 
     if destination.exists():
         if pack_inventory(destination) != entry:
@@ -560,10 +601,11 @@ def install_pack(repo, source, approve=False):
         try:
             for relative in entry["files"]:
                 target = stage / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source / relative, target)
+                durable_mkdir(target.parent)
+                shutil.copyfile(checked_path(source, relative), target)
                 with target.open("rb") as stream:
                     os.fsync(stream.fileno())
+                sync_directory(target.parent)
             if pack_inventory(stage) != entry:
                 raise SchemaError("Pack changed during installation.")
             os.replace(stage, destination)

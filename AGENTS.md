@@ -30,7 +30,7 @@ Do not add the following without an explicit request:
 - Root `SKILL.md` makes the cloned project installable as a skill.
 - `scripts/factum.py` is the uv-compatible public entry point.
 - `scripts/factum_lib/` contains implementation.
-- `assets/packs/` contains seed schema packs.
+- `scripts/factum_lib/assets/packs/` contains packaged seed schema packs.
 - The host repository owns `data/`.
 - Installed corpus packs and `schema-lock.json` govern validation.
 - SQLite is a rebuildable projection.
@@ -104,6 +104,15 @@ Do not claim a command or test was executed unless it was.
 
 Respect user instructions prohibiting execution.
 
+Use conventional `tests/test_*.py` files and the single
+`tools/smoke_test.py` entry point. Keep test helpers small; do not add a custom
+test framework. Run `uv run --group dev pytest -q`, then
+`uv run --no-project tools/smoke_test.py` for release acceptance.
+
+The smoke test must snapshot current files, including relevant uncommitted
+changes, rather than clone a stale project commit. Keep environments and
+workspaces on Linux paths when developing through WSL.
+
 ## Schema-pack work
 
 Before adding a pack:
@@ -135,6 +144,7 @@ available to rebuild historical records.
 - Do not shell-interpolate record values.
 - Keep generated output machine-readable.
 - Do not leak raw sensitive evidence through unnecessary diagnostics.
+- Keep validation errors to schema paths and failed rules, not evidence values.
 - Use process locks for coordinated local toolkit writes.
 - Do not assume that toolkit locks coordinate external Git operations.
 

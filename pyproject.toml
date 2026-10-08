@@ -17,6 +17,13 @@ dependencies = [
 [project.scripts]
 factum = "factum_lib.cli:main"
 
+[dependency-groups]
+dev = ["pytest>=8,<10", "build>=1,<2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts", "."]
+testpaths = ["tests"]
+
 [tool.setuptools]
 package-dir = {"" = "scripts"}
 include-package-data = true

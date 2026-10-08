@@ -12,7 +12,7 @@ This file is a navigation aid, not a duplicate schema specification.
 - **Agent workflow:** [SKILL.md](../SKILL.md).
 - **Installing and extending schemas:** [INSTALL.md](../INSTALL.md).
 
-The installed skill's `assets/packs/` contains seeds. After initialization,
+The installed skill's `scripts/factum_lib/assets/packs/` contains seeds. After initialization,
 the corpus's locked copies govern validation.
 
 Do not edit installed packs or portable records to make validation pass.
