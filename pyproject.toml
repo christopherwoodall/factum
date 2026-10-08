@@ -19,7 +19,17 @@ factum = "factum_lib.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "scripts"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["scripts"]
-include = ["factum_lib*"]
+include = ["factum_lib", "factum_lib.*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+factum_lib = [
+    "assets/packs/*/*/pack.json",
+    "assets/packs/*/*/definitions.json",
+    "assets/packs/*/*/schemas/*.json",
+    "assets/packs/*/*/schemas/**/*.json",
+]
