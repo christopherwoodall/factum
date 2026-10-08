@@ -1,468 +1,367 @@
 # Factum
 
-**Schema-driven evidence storage for research agents.**
+**Schema-driven evidence storage for research agents, inside the repository they already use.**
 
-Factum preserves what agents find, connects it through an evidence graph,
-and makes it searchable through a local SQLite index. Portable JSONL
-records synchronize through Git.
+Factum is a repository skill and a small Python toolkit. Agents collect and
+review information. Factum stores their submitted evidence, validates its
+shape, connects its provenance, indexes it in SQLite, and exports portable
+JSONL records for Git synchronization.
 
-**Collect elsewhere. Store exactly. Search locally. Share through Git.**
+Factum is not a crawler, agent runtime, or backend service.
 
-## What Factum provides
+## Start here
 
-- **Agent Skills** for onboarding and everyday use.
-- **Strict JSON Schemas** for observations, observables, claims, and relationships.
-- **Exact evidence preservation** without changing case, whitespace, or file bytes.
-- **Provenance** connecting observations, artifacts, sightings, and interpretations.
-- **Flexible work lanes** with editable READMEs and research writeups.
-- **Local matching** using exact values, derived comparison keys, and optional fuzzy search.
-- **Portable records** that can rebuild a local SQLite index.
-- **Scripts runnable through uv** so agents do not need to write SQL or construct ledger files.
+- **Installing or upgrading:** [INSTALL.md](INSTALL.md)
+- **Using Factum as an agent:** [SKILL.md](SKILL.md)
+- **Developing Factum:** [AGENTS.md](AGENTS.md)
+- **Data contracts, schema packs, and testing:** [ARCHITECTURE.md](ARCHITECTURE.md)
 
-Factum is not a crawler, scraper, agent runtime, or hosted backend service.
-Agents handle collection, external research, review, and normal Git operations.
+## Quick installation
 
-## Install
-
-Start with **[INSTALL.md](INSTALL.md)**, then use the
-**[factum-onboarding skill](skills/factum-onboarding/SKILL.md)**.
-
-Requirements:
-
-- Python 3.11 or newer.
-- uv.
-- Git.
-
-No database server is required.
-
-Install both complete skill directories using your agent platform's skill
-installation mechanism:
-
-```text
-skills/factum/
-skills/factum-onboarding/
-```
-
-The toolkit and corpus can live in the same repository or in separate
-repositories.
-
-## Quick start
-
-The examples below assume commands run from the Factum toolkit checkout.
-Replace `<corpus-repository>` with the repository where your evidence belongs.
-
-### Initialize a corpus
-
-For authorized initialization:
+From the root of the repository that will hold the evidence:
 
 ```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  init --site worker-a
+git clone https://github.com/christopherwoodall/factum.git \
+  .agents/skills/factum
+
+uv run .agents/skills/factum/scripts/factum.py init
+
+uv run .agents/skills/factum/scripts/factum.py doctor
 ```
 
-For an existing corpus, this prepares missing local state without replacing
-its shared identity or pinned schemas.
-
-### Store an already-collected file
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  capture \
-  --url 'https://Example.org/Page' \
-  --file ./captures/page.html \
-  --storage local \
-  --tags '{"purpose":"infrastructure follow-up"}'
-```
-
-**This command does not download the URL.** It records the supplied source
-information and copies the supplied file unchanged.
-
-Use `--storage git` when you intend to include those bytes in Git.
-
-### Record an external dataset reference
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  reference \
-  --uri 'https://huggingface.co/datasets/example/dataset' \
-  --revision '<pinned-revision>'
-```
-
-A reference records where material can be found. It does not claim that
-remote bytes were preserved.
-
-### Search the local corpus
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  match --url 'https://Example.org/Page'
-```
-
-For an observable:
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  match --value 'Example.COM' --type domain --mode exact
-```
-
-Successful searches return `not_found` or a list of matches. Errors and
-incomplete searches are reported separately.
-
-**`not_found` means no match in the searched Factum dataset—not global
-novelty or originality.**
-
-## How it works
-
-```text
-Agent collects and reviews data
-              │
-              ▼
-       Factum scripts
-              │
-       Validate shapes
-       Preserve exact values
-       Store supplied bytes
-              │
-              ▼
-     Durable pending records
-              │
-              ├──────────► SQLite index
-              │
-            export
-              │
-              ▼
-       Portable JSONL batches
-              │
-       Agent commits and pushes
-              │
-              ▼
-       Other sites pull and rebuild
-```
-
-### Storage authority
-
-| Layer | Purpose |
-|---|---|
-| Portable records | Shared evidence and assertion records |
-| Pending records | Durable, locally accepted work not yet exported |
-| SQLite | Rebuildable local search and relationship index |
-| Artifact files | Exact captured bytes, retained locally or in Git |
-| Lane documents | Editable research context and writeups |
-
-Export makes pending records portable in the working tree. It does not
-commit or push them.
-
-## Evidence model
-
-Factum separates what was found from what an agent thinks it means.
-
-| Shape | Meaning |
-|---|---|
-| `source` | Website, dataset, document, or external-system origin |
-| `artifact` | Captured bytes or an explicit external reference |
-| `observation` | What was encountered or submitted, when, and how |
-| `observable` | An exact typed value, such as a URL, domain, hash, or term |
-| `sighting` | Where an observable appeared in an observation |
-| `event` | A proposed event anchor supported by citations |
-| `claim` | An assertion about a subject |
-| `edge` | A registered relationship between nodes |
-| `assessment` | A scoped interpretation or matching assessment |
-| `run` | Method and execution context |
-| `annotation` | Metadata attached to an existing identity |
-| `retraction` | An explicit withdrawal that preserves history |
-| `lane` | An editable work context with documents and metadata |
-
-Claims are graded:
-
-- **OBSERVED** — grounded in what was directly recorded.
-- **UPSTREAM** — an assertion made by a source.
-- **INFERENCE** — an analyst or agent interpretation.
-
-These grades describe the assertion's basis. They do not automatically
-establish truth.
-
-### Exact values and derived search keys
-
-An observable such as `Example.COM` remains `Example.COM`.
-
-Factum may derive `example.com` for comparison, but the derived value never
-replaces the evidence.
-
-Malformed URLs and other imperfect source values can still be stored.
-Parsing problems belong in derived indexing warnings.
-
-### Tags
-
-Every record has a `tags` object for miscellaneous JSON metadata:
-
-```json
-{
-  "tags": {
-    "purpose": "follow-up",
-    "review": {
-      "state": "unreviewed"
-    }
-  }
-}
-```
-
-Tags do not define graph references or change evidence identity.
-
-Shared deterministic identities use empty tags in their identity records.
-Submitted metadata becomes a separate annotation, preventing two agents
-tagging the same value differently from creating false merge conflicts.
-
-## Structured submissions
-
-Use a bundle when submitting related observations, sightings, claims, or
-relationships.
-
-Get an example:
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  template
-```
-
-Submit a completed bundle:
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  add --input ./bundle.json
-```
-
-Bundles use short local refs for new items. Scripts assign record IDs,
-hash supplied files, resolve declared reference fields, and validate the
-result.
-
-Strings inside raw values, quotes, claim values, and tags are not rewritten
-during reference resolution.
-
-See **[submission shapes](skills/factum/references/shapes.md)**.
-
-## Work lanes
-
-A lane can represent an investigation, a follow-up, a scan, or any other
-period or thread of work.
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  lane new 'Infrastructure follow-up' \
-  --date 2026-10-08 \
-  --kind investigation
-```
-
-Link existing evidence:
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  lane link <lane-id> <record-id>
-```
-
-Lane membership is stored through relationships. Evidence can belong to
-multiple lanes.
-
-READMEs, findings, and methodology documents remain ordinary editable
-Markdown files.
-
-## Git workflow
-
-### Before synchronization
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> export
-
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> verify
-```
-
-Then:
-
-1. Review the intended changes.
-2. Commit according to your repository's policy.
-3. Push only when authorized.
-
-Export creates new sealed batches rather than rewriting a shared JSONL file.
-
-### After pull, merge, or checkout
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> rebuild
-```
-
-Normal rebuilds include pending records. They must not silently discard
-unexported work.
-
-Use separate worktrees or checkouts for concurrent agents.
-
-### Historical rebuild
-
-```bash
-uv run skills/factum/scripts/factum.py \
-  --repo <corpus-repository> \
-  rebuild --at HEAD~1
-```
-
-This reads the selected Git tree without changing the checkout and writes a
-separate historical database. It does not replace the active writable index.
-
-## Artifact retention
-
-| Mode | What travels through Git |
-|---|---|
-| `git` | Captured bytes and portable metadata |
-| `local` | Portable metadata; bytes remain on the collecting site |
-| Reference | External URI and optional revision; no captured bytes implied |
-
-The default is local storage.
-
-Raw Git-retained files use binary Git attributes to prevent line-ending
-conversion.
-
-**Local-only evidence does not appear in another clone.** Keep its local
-storage or arrange a separate backup when those bytes matter.
+Use your agent platform's skills directory if it differs.
+
+A plain clone creates a nested Git repository. Before staging host-repository
+changes, choose whether the skill should remain a local installation or be
+tracked as a submodule. See [INSTALL.md](INSTALL.md).
 
 ## Repository layout
 
 ```text
-.
-├── INSTALL.md
-├── AGENTS.md
-├── pyproject.toml
-├── skills/
-│   ├── factum/
-│   │   ├── SKILL.md
-│   │   ├── scripts/
-│   │   ├── assets/
-│   │   └── references/
-│   └── factum-onboarding/
-│       ├── SKILL.md
-│       ├── scripts/
-│       └── references/
-├── tools/
-│   └── register_schema.py
-└── tests/
-```
-
-Onboarding creates this layout in the selected corpus:
-
-```text
-data/
-├── corpus.json
-├── schema-lock.json
-├── capture-policy.json
-├── schemas/
-├── registry.json
-├── extensions/
-├── records/
-├── lanes/
-├── blobs/
-└── .local/           # Ignored by Git
-    ├── factum.db
-    ├── site.json
-    ├── pending/
+your-repository/
+├── .agents/
+│   └── skills/
+│       └── factum/
+│           ├── SKILL.md
+│           ├── INSTALL.md
+│           ├── ARCHITECTURE.md
+│           ├── scripts/
+│           └── assets/packs/
+│
+└── data/
+    ├── corpus.json
+    ├── schema-lock.json
+    ├── schema-packs/
+    ├── records/
+    ├── lanes/
     ├── blobs/
-    └── snapshots/
+    └── .local/
 ```
 
-Corpus schemas are pinned independently of the installed skill.
-Updating the toolkit must not silently change how existing records validate.
+The installed skill holds code and seed packs.
 
-## Agent commands
+The host repository owns the corpus:
 
-The factum skill can interpret requests such as:
+- `data/schema-packs/`: installed, pinned schema packs
+- `data/records/`: exported immutable JSONL batches
+- `data/lanes/`: editable work contexts and Markdown documents
+- `data/blobs/`: explicitly Git-retained evidence bytes
+- `data/.local/`: SQLite, pending submissions, and local-only bytes
+
+`data/.local/` is ignored by Git.
+
+**Not everything under `.local/` is disposable.** SQLite is rebuildable.
+Unexported pending records and local-only evidence may be the only copies.
+
+## The workflow
 
 ```text
-/factum status
-/factum match <URL or value>
-/factum capture <URL> <file>
-/factum add <bundle>
-/factum lane new <title>
-/factum query <question>
-/factum export
-/factum rebuild
+Agent acquires and reviews information
+                 |
+                 v
+       capture / add / extract / note
+                 |
+                 +--> preserved bytes or external references
+                 +--> durable pending records
+                 +--> SQLite index
+                 |
+                 v
+               export
+                 |
+                 v
+        sealed portable JSONL batches
+                 |
+                 v
+      agent reviews and performs Git operations
+                 |
+                 v
+          verify + rebuild at another checkout
 ```
 
-Native slash-command registration depends on the agent platform. It is not
-installed automatically by the Agent Skills specification.
+Factum does not fetch URLs, query external trackers, commit, push, pull,
+merge, or choose branch policy.
 
-See **[command reference](skills/factum/references/commands.md)**.
+## Evidence remains unchanged
 
-<details>
-<summary><strong>Schema extensions</strong></summary>
+Factum preserves exact submitted strings and file bytes.
 
-Use `tags` for exploratory metadata.
+- `Example.COM` remains `Example.COM`.
+- Malformed URLs can still be evidence.
+- A copied artifact is not reformatted or redacted.
+- Sensitivity can be annotated in `tags`.
+- Derived matching keys never replace raw values.
 
-Use a registered type or extension schema for reusable structured data.
-Operator-approved additions are handled by `tools/register_schema.py`.
+An exact source file should be stored as an artifact when its byte-level
+serialization matters. Parsing JSON and storing its fields does not preserve
+the original file's whitespace or key order.
 
-Core identity, envelope, time, or reference changes require an explicit
-versioned migration design. The toolkit does not silently rewrite old
-evidence.
+## Capture already-collected evidence
 
-See **[schema extension guidance](skills/factum/references/schema-extension.md)**.
+First, acquire the data with your own tools.
 
-</details>
-
-<details>
-<summary><strong>Development</strong></summary>
-
-Read **[AGENTS.md](AGENTS.md)** before contributing.
-
-For local development:
+Then record the saved file:
 
 ```bash
-uv sync --extra dev
-uv run pytest
+uv run .agents/skills/factum/scripts/factum.py \
+  capture \
+  --url 'https://Example.COM/report?Token=AbC' \
+  --file ./captures/report.html \
+  --storage git \
+  --actor agent:researcher \
+  --key mission-17/capture-1
 ```
 
-Public scripts use inline dependency metadata and remain runnable through
-`uv run`.
+Factum does not fetch that URL.
 
-Tests should cover exact evidence preservation, idempotency, pending
-recovery, export/rebuild round trips, schema integrity, graph references,
-and multi-site synchronization.
+Use `--observed-at` when the actual acquisition time is known. Otherwise
+Factum records its receive time with an explicit time basis.
 
-Only report tests as passing when they were actually run successfully.
+### Storage choices
 
-</details>
+| Choice | Meaning |
+|---|---|
+| `--storage git` | Preserve submitted bytes under `data/blobs/` |
+| `--storage local` | Preserve submitted bytes under `data/.local/blobs/` |
+| Reference artifact | Store a locator and optional revision without claiming preservation |
 
-<details>
-<summary><strong>Current boundaries</strong></summary>
+Example dataset reference:
 
-The initial toolkit intentionally excludes:
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  capture \
+  --dataset 'https://huggingface.co/datasets/example/corpus' \
+  --revision '<pinned-revision>' \
+  --coverage metadata_only \
+  --actor agent:researcher \
+  --key mission-17/dataset-reference-1
+```
 
-- External fetching and novelty searches.
-- Automatic Git commits, pushes, or hooks.
-- Hosted APIs and MCP servers.
-- Embedding services and vector databases.
-- Core schema migrations.
-- Git history compaction.
-- Globally coordinated offline idempotency.
+A reference is not proof that the dataset bytes remain available.
 
-Extraction operates on stored UTF-8 artifacts using registered regexes.
-It does not perform OCR, unpack archives, or interpret browser captures.
+## Search
 
-Fuzzy search uses a bounded candidate set. Exhausted coverage must not
-produce an authoritative `not_found`.
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  match --value 'Example.COM' --type domain
+```
 
-The initial implementation rebuilds SQLite during ingestion. Incremental
-indexing is a future performance improvement if corpus size requires it.
+Derived-key matching:
 
-</details>
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  match --value 'Example.COM' --type domain --mode key
+```
 
-## Core principle
+Fuzzy retrieval:
 
-> Preserve the evidence. Keep interpretation separate. Make the record
-> portable and the index rebuildable.
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  match --text 'example infrastructure' --mode fuzzy
+```
+
+Results are:
+
+- `found`, with a list of matches
+- `not_found`, with the searched scope
+- `ok: false`, when the operation fails
+
+A failed search is not `not_found`.
+
+A no-match result means no match under the stated query, policy, and indexed
+scope. It does not establish global novelty or originality.
+
+Fuzzy results are candidates, not identity decisions.
+
+## Record shapes
+
+| Kind | Purpose |
+|---|---|
+| `source` | Origin or source locator |
+| `artifact` | Preserved bytes or an external reference |
+| `observation` | What was encountered or submitted |
+| `observable` | Exact typed value |
+| `sighting` | Where a value appeared |
+| `event` | Proposed event anchor |
+| `claim` | Assertion with basis and citations |
+| `edge` | Registered relationship |
+| `assessment` | Scoped comparison or interpretation |
+| `run` | Collection, extraction, or analytical context |
+| `retraction` | Withdrawal without deleting the original record |
+
+Every record has a `tags` object for miscellaneous JSON metadata.
+
+Lanes are editable contexts with their own `tags`, stable IDs, and ordinary
+Markdown documents.
+
+## Structured submissions
+
+Use bundles for related records:
+
+```json
+{
+  "bundle": 2,
+  "idempotency_key": "mission-17/value-1",
+  "actor": "agent:researcher",
+  "tags": {},
+  "records": [
+    {
+      "ref": "domain",
+      "kind": "observable",
+      "body": {
+        "type": "domain",
+        "value": "Example.COM"
+      },
+      "tags": {
+        "review_status": "unreviewed"
+      }
+    }
+  ]
+}
+```
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  add --input bundle.json
+```
+
+The script assigns record IDs, fingerprints, acceptance timestamps, and
+registered schema assignments.
+
+A standalone observable records a submitted value. Use an observation and
+sighting when you need to record exactly where that value appeared.
+
+Local bundle references use `@name` only in declared reference fields.
+Factum does not rewrite matching strings inside evidence values or `tags`.
+
+## Schema packs
+
+Schemas are individual JSON files grouped into versioned packs.
+
+A pack can define:
+
+- observation payload schemas
+- observable types
+- event payload schemas
+- predicates and endpoint constraints
+
+Inspect the installed definitions:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py schema list
+
+uv run .agents/skills/factum/scripts/factum.py \
+  schema assigned observation web.capture
+
+uv run .agents/skills/factum/scripts/factum.py \
+  schema describe urn:factum:web:web-capture:1
+```
+
+Preview a local pack installation:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  schema install ./schema-proposals/research-webhooks/1.0.0
+```
+
+Install when authorized:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  schema install ./schema-proposals/research-webhooks/1.0.0 --approve
+```
+
+Updating the skill does not update installed corpus schemas.
+
+The current installer is additive. It rejects replacement schema IDs and
+type assignments. See [INSTALL.md](INSTALL.md) before updating a pack.
+
+## Lanes and writeups
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  lane new "Infrastructure follow-up"
+```
+
+Factum creates a lane document and initial Markdown files. Agents can maintain
+README, provenance notes, findings, methodology, and other writeups normally.
+
+Lane membership is recorded through `in_lane` edges rather than a shared
+mutable membership list.
+
+## Git synchronization
+
+Before Git operations that publish or change the corpus:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py export
+uv run .agents/skills/factum/scripts/factum.py verify --blobs
+```
+
+Review the results and intended files. Commit and synchronize them yourself.
+
+After a pull, merge, or checkout:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py verify
+uv run .agents/skills/factum/scripts/factum.py rebuild
+```
+
+Do not run Git changes concurrently with Factum commands in the same worktree.
+Use separate worktrees for concurrent workers.
+
+`verify --blobs` reports missing bytes separately. Missing local-only artifacts
+may be expected at another site; they must not be mistaken for verified
+preservation at that site.
+
+## Historical views
+
+Build a separate index from a commit without checking it out:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  --at <commit> rebuild
+```
+
+Search it:
+
+```bash
+uv run .agents/skills/factum/scripts/factum.py \
+  --at <commit> match --value 'Example.COM' --type domain
+```
+
+Historical views use that commit's packs, lock, records, and lanes. They exclude
+current pending submissions.
+
+## Current boundaries
+
+- Portable corpus format: `2`
+- No automatic migration from format `1`
+- Full corpus validation and SQLite rebuilds
+- Bounded, heuristic fuzzy retrieval
+- UTF-8 regex extraction
+- No arbitrary code execution from schema packs
+- No automatic resolution of factual disagreements
+- No automatic Git operations or source acquisition
+
+The implementation needs local testing and representative-scale benchmarking
+before production or high-volume use. See [ARCHITECTURE.md](ARCHITECTURE.md).
