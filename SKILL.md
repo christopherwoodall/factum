@@ -55,7 +55,7 @@ For development smoke tests, use a separate disposable host Git repository,
 not the Factum source checkout.
 
 Read [INSTALL.md](INSTALL.md) for setup, code updates, and schema-pack
-installation. Read [ARCHITECTURE.md](ARCHITECTURE.md) when authoring packs,
+installation. Read [ARCHITECTURE.md](docs/ARCHITECTURE.md) when authoring packs,
 debugging integrity issues, or changing implementation details.
 
 ## Code and schema versions
@@ -131,6 +131,11 @@ Choose storage explicitly:
 
 Use `--observed-at` when the real acquisition time is known.
 
+`capture` creates three records: the artifact, a source for `--url`, and a
+`web.capture` observation linking them. Pass `--tags '{"lane":"<lane>"}'` so
+all three carry the lane tag. `--lane` is different: it creates `in_lane`
+edge records and does not set `tags.lane`.
+
 Use actor/run-scoped idempotency keys. Reuse a key only when retrying the same
 request. File retries require the original submitted files to remain available.
 
@@ -145,7 +150,9 @@ template --type <observation-type>
 ```
 
 `template` returns a scaffold and its payload schema. The scaffold is not a
-completed valid capture.
+completed valid capture. The submittable bundle is the value under the
+`bundle` key; use `template --type <observation-type> --bare` to print only
+the bundle, ready to fill in and submit with `add --input`.
 
 Submit a bundle:
 
@@ -156,17 +163,52 @@ add --input <bundle.json>
 Bundle rules:
 
 - Use `"bundle": 2`.
+- Set top-level `"actor"` and `"idempotency_key"` (both required; a bundle
+  without them fails schema validation).
 - Use `records[].ref` for bundle-local names.
 - Use `"@name"` only in declared reference fields.
 - Put miscellaneous record metadata in `records[].tags`.
 - Submit local bytes through `files[]`.
 - Do not compute record IDs or fingerprints.
 - Scripts assign registered `data_schema` and `value_schema` fields.
+- A top-level `"lane"` creates `in_lane` edge records; it does not set
+  `tags.lane`. Keep setting the lane tag on every record.
 
 If explicitly supplied schema assignments disagree with the registered type,
 the submission fails.
 
 Strings in `tags` and claim values are not automatically resolved as references.
+
+### Pre-ingest validation (standing rule)
+
+Before submitting any record, validate all of the following. Post-hoc
+retractions are a fallback for genuine errors, not a substitute for care.
+
+**1. Dedup check.** For each candidate record, run
+`match --text "<key-term>" --mode fuzzy` against the corpus, where
+`<key-term>` is the record's primary identifier (term, hostname, URL,
+paste ID, etc.).
+- If a matching record already exists, do not submit a duplicate. Note the
+  overlap and link to the existing record instead.
+- Dedup within the batch itself by key field before submitting.
+- `seen_before` only catches byte-exact duplicates — it does not catch the
+  same entity with slightly different metadata. The manual check above does.
+- Also check provenance paths on matches: a match with a stale `evidence/`
+  path vs your `data/lanes/` path indicates a pre/post-move duplicate.
+
+**2. Schema mapping.** Verify the term/field mapping before submitting:
+- The `term` (or primary identifier) must be the actual IOC value, not an
+  internal ID. If the source uses internal IDs (e.g. `R0002137`), map to the
+  real value from the appropriate label (e.g. `markers_present`).
+- Check `schema describe <schema-id>` if unsure which fields are available.
+- Do not submit records with placeholder terms.
+
+**3. Verbatim bodies.** Message and payload bodies must be byte-identical to
+source. Do not truncate, do not replace newlines, do not excerpt. Pull from
+`raw/` if `events.jsonl` has excerpts.
+
+**4. Edges.** Do not create edges during ingest. Edge building is a separate
+pass after lanes are in, with explicit bounds per run.
 
 ## Search
 
@@ -183,6 +225,9 @@ Report either:
 - the list of matches.
 
 Do not turn `not_found` into a claim of originality or global novelty.
+
+Fuzzy mode matches on best alignment (whole-string or substring), so a
+short query finds longer values that contain it.
 
 Search covers structured Factum records, not every file in the repository or
 all external sources.
@@ -209,7 +254,11 @@ Do not inspect raw files unless the task requires interpreting them.
 
 ## Claims, lanes, and documents
 
-Use `note` or a bundle for cited claims.
+Use `note` or a bundle for cited claims. A claim's `subject` must be a
+Factum record ID (pattern `<kind>_[0-9a-f]{32}`), not free text — in
+bundles, use `"@ref"` to the bundle-local record (e.g. the observation or
+run the claim is about). `cites` likewise takes record IDs or `@refs`.
+Free-text subjects fail schema validation.
 
 Use `lane new`, `lane show`, `lane edit`, and `lane link` for work contexts.
 
@@ -220,6 +269,15 @@ An event is an anchor, not an automatic canonical truth.
 
 Retractions preserve original records. Search does not automatically hide
 retracted material; inspect retractions when interpreting current claims.
+
+Metadata-only updates use `factum update <record-id> --actor <agent>
+--set <path>=<value>`. Editable paths are `tags.*` (except reserved
+`factum.*` keys) and the schema-declared body paths `body.provenance`,
+`body.data.provenance`, and `body.data.status` (enum-enforced). Values are
+JSON; `null` on a `tags.*` path deletes the key. Anything else is rejected
+with `EVIDENCE_EDIT`. Retracted records cannot be updated, `--at` is
+read-only, and every effective change stamps `factum.updated_by` /
+`factum.updated_at` and recomputes the fingerprint before re-projecting.
 
 ## Schema extension decision
 
@@ -326,3 +384,7 @@ Map agent-facing requests to the toolkit:
 Native slash-command registration is host-specific.
 
 For a complete synthetic walkthrough, see [docs/HANDOFF.md](docs/HANDOFF.md).
+
+For scheduled connection discovery between records, see
+[docs/EDGE_BUILDER.md](docs/EDGE_BUILDER.md). For the absorbed-copy Git
+workflow, see [docs/DUAL-GIT.md](docs/DUAL-GIT.md).
