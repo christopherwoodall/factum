@@ -1,0 +1,2 @@
+[console_scripts]
+factum = factum_lib.cli:main

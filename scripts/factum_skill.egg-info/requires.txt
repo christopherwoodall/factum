@@ -1,0 +1,4 @@
+filelock<4,>=3.16
+jsonschema[format]<5,>=4.23
+referencing<1,>=0.35
+rapidfuzz<4,>=3.10

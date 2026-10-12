@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: factum-skill
+Version: 0.2.0
+Summary: Schema-driven, Git-portable evidence storage
+Requires-Python: >=3.11
+Requires-Dist: filelock<4,>=3.16
+Requires-Dist: jsonschema[format]<5,>=4.23
+Requires-Dist: referencing<1,>=0.35
+Requires-Dist: rapidfuzz<4,>=3.10
