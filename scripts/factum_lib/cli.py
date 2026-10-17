@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 import re
 import sqlite3
 from datetime import date
 from pathlib import Path
 
 from filelock import FileLock, Timeout
-from rapidfuzz.fuzz import ratio
+from rapidfuzz.fuzz import partial_ratio, ratio
 
 from . import FORMAT_VERSION, TOOLKIT_VERSION
 from .schemas import (
@@ -18,8 +19,8 @@ from .schemas import (
     durable_mkdir,
 )
 from .store import (
-    FactumError, State, add_bundle, atomic_bytes, export_pending,
-    fail, head, initialize, new_id, now, resolve_repo,
+    FactumError, ReadState, State, add_bundle, atomic_bytes, export_pending,
+    fail, head, initialize, new_id, now, resolve_repo, update_record,
 )
 
 
@@ -142,6 +143,17 @@ def capture(state, args):
     return add_bundle(state, bundle)
 
 
+def fuzzy_score(query, raw_value):
+    """Best alignment score between a query and a candidate value.
+
+    ``ratio`` handles similar-length strings; ``partial_ratio`` handles
+    short queries against longer values (substring matches). The gate and
+    the reported score both use the best of the two, so a short query can
+    no longer miss a value that contains it verbatim.
+    """
+    return max(ratio(query, raw_value), partial_ratio(query, raw_value))
+
+
 def match(state, args):
     query = read_json(args.input) if args.input else {
         "value": args.value or args.url or args.sha256 or args.text,
@@ -210,10 +222,15 @@ def match(state, args):
                     ):
                         if value_type and entry["value_type"] != value_type:
                             continue
-                        if ratio(value, entry["raw_value"]) >= 65:
+                        if fuzzy_score(value, entry["raw_value"]) >= 65:
                             candidates.append(dict(entry))
 
         matches = {}
+        # Batch-fetch all candidate documents and sightings with uniform
+        # interface (works for both State and ReadState).
+        candidate_ids = list(dict.fromkeys(item["node_id"] for item in candidates))
+        documents = state.get_records(candidate_ids)
+        sightings_by_observable = state.get_sightings(candidate_ids)
         for item in candidates:
             rid = item["node_id"]
             exact = item["raw_value"] == value
@@ -226,22 +243,21 @@ def match(state, args):
                     (rid,),
                 )
             ]
-            sightings = [
-                record for record in state.records.values()
-                if record["record_kind"] == "sighting"
-                and record["body"]["observable"] == rid
-            ][:10]
+            sightings = sightings_by_observable.get(rid, [])[:10]
+            record = documents.get(rid)
+            if record is None:
+                continue
             matches[rid] = {
                 "id": rid,
-                "record_kind": state.records[rid]["record_kind"],
+                "record_kind": record["record_kind"],
                 "value": item["raw_value"],
                 "value_type": item["value_type"],
                 "match_type": "exact" if exact else mode,
-                "score": ratio(value, item["raw_value"]) if mode == "fuzzy" else None,
-                "tags": state.records[rid]["tags"],
+                "score": fuzzy_score(value, item["raw_value"]) if mode == "fuzzy" else None,
+                "tags": record["tags"],
                 "lanes": lanes,
                 "sightings": sightings,
-                "record": state.records[rid],
+                "record": record,
             }
 
         ordered = sorted(
@@ -340,7 +356,10 @@ def extract(state, args):
 
 
 def graph(state, args):
+    # state.kind() works for both State (in-memory) and ReadState (SQLite).
     if state.kind(args.node) is None:
+        fail("NOT_FOUND", args.node)
+    elif state.kind(args.node) is None:
         fail("NOT_FOUND", args.node)
     if not 0 <= args.depth <= 10 or not 1 <= args.limit <= 2000:
         fail("LIMIT", "Depth must be 0..10 and limit 1..2000.")
@@ -412,23 +431,54 @@ def query_records(state, args):
 
     db = state.connect()
     try:
-        sql = "SELECT document FROM records"
-        params = []
-        if kind:
-            sql += " WHERE kind=?"
-            params.append(kind)
-        sql += " ORDER BY id"
-        count, records = 0, []
-        for row in db.execute(sql, params):
-            record = parse_json(row[0])
-            if any(
-                key not in record["tags"] or record["tags"][key] != value
-                for key, value in tags.items()
-            ):
-                continue
-            if offset <= count < offset + limit:
-                records.append(record)
-            count += 1
+        # Use the record_tags index for tag filtering when tags are given.
+        # This avoids JSON-parsing every record document in Python.
+        # Falls back to document scan only if the tags table is empty
+        # (e.g., index built before the tags table was added).
+        use_tag_index = bool(tags) and db.execute(
+            "SELECT COUNT(*) FROM record_tags"
+        ).fetchone()[0] > 0
+
+        if use_tag_index:
+            # Build a query that joins records with tag filters
+            sql = "SELECT DISTINCT r.document FROM records r"
+            params = []
+            if kind:
+                sql += " WHERE r.kind=?"
+                params.append(kind)
+            for i, (key, value) in enumerate(tags.items()):
+                alias = f"t{i}"
+                sql += (
+                    f" {'AND' if (kind or i > 0) else 'WHERE'}"
+                    f" EXISTS (SELECT 1 FROM record_tags {alias}"
+                    f" WHERE {alias}.record_id=r.id"
+                    f" AND {alias}.key=? AND {alias}.value=?)"
+                )
+                params.extend([key, str(value)])
+            sql += " ORDER BY r.id"
+            count, records = 0, []
+            for row in db.execute(sql, params):
+                if offset <= count < offset + limit:
+                    records.append(parse_json(row[0]))
+                count += 1
+        else:
+            sql = "SELECT document FROM records"
+            params = []
+            if kind:
+                sql += " WHERE kind=?"
+                params.append(kind)
+            sql += " ORDER BY id"
+            count, records = 0, []
+            for row in db.execute(sql, params):
+                record = parse_json(row[0])
+                if any(
+                    key not in record["tags"] or record["tags"][key] != value
+                    for key, value in tags.items()
+                ):
+                    continue
+                if offset <= count < offset + limit:
+                    records.append(record)
+                count += 1
         return {
             "records": [] if query.get("count") else records,
             "count": count,
@@ -467,8 +517,12 @@ def lane_command(state, args):
             "FINDINGS.md": "# Findings\n\nGrade claims OBSERVED, UPSTREAM, or INFERENCE.\n",
         }.items():
             atomic_bytes(directory / filename, text.encode("utf-8"))
-        State(state.repo).load().project()
-        return {"lane": lane, "path": directory.relative_to(state.repo).as_posix()}
+        rel = directory.relative_to(state.repo).as_posix()
+        state.lanes[lane["id"]] = {"record": lane, "path": f"{rel}/lane.json"}
+        state.validate_references()
+        state.compute_state_digest()
+        state.project()
+        return {"lane": lane, "path": rel}
 
     lane_id = state.lane_id(args.lane)
     lane = state.lanes[lane_id]
@@ -483,7 +537,10 @@ def lane_command(state, args):
             document["tags"] = parse_tags(args.tags)
         state.catalog.validate(CORE["lane"], document)
         write_json_atomic(state.repo / lane["path"], document)
-        State(state.repo).load().project()
+        state.lanes[lane_id]["record"] = document
+        state.validate_references()
+        state.compute_state_digest()
+        state.project()
         return {"lane": document}
 
     bundle = base_bundle(args)
@@ -499,10 +556,42 @@ def lane_command(state, args):
     return add_bundle(state, bundle)
 
 
+def update_command(state, args):
+    assignments = []
+    if args.tags is not None:
+        for key, value in parse_tags(args.tags).items():
+            if key.startswith("tags."):
+                key = key[len("tags."):]
+            assignments.append((f"tags.{key}", value))
+    for item in args.set:
+        path, separator, raw = item.partition("=")
+        path = path.strip()
+        if not separator or not path:
+            fail("SET", "Use --set <path>=<value>.")
+        try:
+            value = parse_json(raw)
+        except (SchemaError, ValueError):
+            fail("SET", f"Value is not valid JSON: {path}.")
+        assignments.append((path, value))
+    before = state.records.get(args.record_id)
+    before_fingerprint = before["fingerprint"] if before else None
+    record = update_record(state, args.record_id, args.actor, assignments)
+    return {
+        "updated": record["fingerprint"] != before_fingerprint,
+        "record": record,
+    }
+
+
 def parser():
     p = argparse.ArgumentParser(prog="factum")
     p.add_argument("--repo")
     p.add_argument("--at")
+    p.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=None,
+        help="Seconds to wait for writer.lock (defaults to FACTUM_LOCK_TIMEOUT or 30).",
+    )
     sub = p.add_subparsers(dest="command", required=True)
 
     for name in ("init", "status", "doctor", "rebuild", "export"):
@@ -531,6 +620,12 @@ def parser():
 
     template = sub.add_parser("template")
     template.add_argument("--type", default="web.capture")
+    template.add_argument(
+        "--bare",
+        action="store_true",
+        help="Print only the submittable bundle (no CLI envelope). "
+        "Pipe directly to a file for use with `add --input`.",
+    )
 
     def submission(command):
         command.add_argument("--key", required=True)
@@ -605,6 +700,22 @@ def parser():
     link = submission(ls.add_parser("link"))
     link.add_argument("lane")
     link.add_argument("ids", nargs="+")
+
+    update_p = sub.add_parser("update")
+    update_p.add_argument("record_id")
+    update_p.add_argument("--actor", required=True)
+    update_p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        help="Metadata assignment as <path>=<value>; repeatable. "
+        "Values are JSON; null on a tags.* path deletes the key.",
+    )
+    update_p.add_argument(
+        "--tags",
+        help="JSON object of tag assignments merged with --set; "
+        "null values delete the tag.",
+    )
     return p
 
 
@@ -624,14 +735,38 @@ def dispatch(repo, args):
             return {"initialized": False, "next": "init"}
         fail("NOT_INITIALIZED", "Run init.")
 
-    state = State(repo, args.at).load()
-    mutating = (
-        args.command in {"add", "capture", "extract", "note", "export"}
-        or args.command == "lane" and args.action in {"new", "edit", "link"}
-        or args.command == "schema" and args.action == "install"
-    )
+    mutating = is_mutating(args)
+    # Read-only commands use ReadState (SQLite-native): the records table
+    # already holds full JSON documents, so there is no need to parse 99k
+    # records from JSONL into Python memory. Write commands and --at
+    # historical reads use the full State load path.
+    if not mutating and not args.at and args.command in ReadState.READ_COMMANDS:
+        state = ReadState(repo).load()
+    else:
+        # Read-only commands skip reference validation: writes already validate
+        # before mutating, so re-validating the entire corpus on every read is
+        # redundant. The state digest is still computed for index-freshness checks.
+        state = State(repo, args.at).load(validate=mutating)
     if args.at and mutating:
         fail("READ_ONLY", "--at is read-only.")
+
+    if not mutating and args.command in {"match", "query", "graph"}:
+        # Read-only index consumers rebuild a stale or missing index
+        # automatically instead of failing. Write commands keep the hard
+        # failure so index problems surface loudly before mutation.
+        try:
+            db = state.connect()
+            db.close()
+        except FactumError as error:
+            if error.code in {"INDEX_STALE", "INDEX_MISSING"}:
+                # project() needs the full record set, so do a full load.
+                state = State(repo, args.at).load(validate=False)
+                state.project()
+                # Re-enter ReadState for the actual command if applicable.
+                if not args.at and args.command in ReadState.READ_COMMANDS:
+                    state = ReadState(repo).load()
+            else:
+                raise
 
     if args.command in {"status", "doctor"}:
         stale = True
@@ -646,7 +781,7 @@ def dispatch(repo, args):
             "repo": str(repo),
             "version": TOOLKIT_VERSION,
             "format_version": FORMAT_VERSION,
-            "records": len(state.records),
+            "records": state.count_records(),
             "lanes": len(state.lanes),
             "pending": len(state.pending),
             "stale": stale,
@@ -661,7 +796,7 @@ def dispatch(repo, args):
     if args.command == "verify":
         result = {
             "verified": True,
-            "records": len(state.records),
+            "records": state.count_records(),
             "pending": len(state.pending),
             "searched": scope(state),
         }
@@ -698,37 +833,43 @@ def dispatch(repo, args):
 
     if args.command == "template":
         definition = state.catalog.definition("observation", args.type)
+        bundle = {
+            "bundle": FORMAT_VERSION,
+            "idempotency_key": "replace-with-stable-request-key",
+            "actor": "agent:researcher",
+            "tags": {},
+            "records": [
+                {
+                    "ref": "source",
+                    "kind": "source",
+                    "body": {
+                        "source_type": "submitted",
+                        "locator": "replace-with-source-locator",
+                    },
+                },
+                {
+                    "ref": "observation",
+                    "kind": "observation",
+                    "body": {
+                        "type": args.type,
+                        "source": "@source",
+                        "files": [],
+                        "data_schema": definition["schema"],
+                        "data": {},
+                    },
+                    "tags": {},
+                },
+            ],
+        }
+        if args.bare:
+            print(canonical(bundle))
+            return None
         return {
-            "note": "Fill data using the assigned schema; this is a scaffold, not a valid capture.",
+            "note": "Fill data using the assigned schema; this is a scaffold, not a valid capture. "
+            "The submittable bundle is the value under 'bundle'; "
+            "use --bare to print only the bundle.",
             "data_schema": state.catalog.documents[definition["schema"]],
-            "bundle": {
-                "bundle": FORMAT_VERSION,
-                "idempotency_key": "replace-with-stable-request-key",
-                "actor": "agent:researcher",
-                "tags": {},
-                "records": [
-                    {
-                        "ref": "source",
-                        "kind": "source",
-                        "body": {
-                            "source_type": "submitted",
-                            "locator": "replace-with-source-locator",
-                        },
-                    },
-                    {
-                        "ref": "observation",
-                        "kind": "observation",
-                        "body": {
-                            "type": args.type,
-                            "source": "@source",
-                            "files": [],
-                            "data_schema": definition["schema"],
-                            "data": {},
-                        },
-                        "tags": {},
-                    },
-                ],
-            },
+            "bundle": bundle,
         }
 
     if args.command == "add":
@@ -745,6 +886,9 @@ def dispatch(repo, args):
         return graph(state, args)
     if args.command == "lane":
         return lane_command(state, args)
+
+    if args.command == "update":
+        return update_command(state, args)
 
     if args.command == "note":
         bundle = base_bundle(args)
@@ -763,7 +907,7 @@ def dispatch(repo, args):
         return add_bundle(state, bundle)
 
     if args.command == "get":
-        record = state.records.get(args.id)
+        record = state.get_record(args.id)
         if record is None:
             fail("NOT_FOUND", args.id)
         result = {"record": record}
@@ -789,14 +933,55 @@ def dispatch(repo, args):
     fail("COMMAND", "Unsupported command.")
 
 
+def is_mutating(args):
+    """Return True if this command mutates corpus state."""
+    # rebuild swaps factum.db via os.replace; it must hold the writer
+    # lock or it races concurrent adds' own projections (2026-10-17).
+    # NOTE: --at does NOT make a command non-mutating. dispatch() rejects
+    # mutating commands with --at explicitly ("--at is read-only"); if
+    # is_mutating returned False here, `add --at` would skip the lock and
+    # project a historical revision into the live database.
+    if args.command == "rebuild":
+        return True
+    return (
+        args.command in {"init", "add", "capture", "extract", "note", "export", "update"}
+        or args.command == "lane" and args.action in {"new", "edit", "link"}
+        or args.command == "schema" and args.action == "install"
+    )
+
+
+def resolve_lock_timeout(args):
+    """Seconds to wait for writer.lock: flag > env > 30s default."""
+    if getattr(args, "lock_timeout", None) is not None:
+        return args.lock_timeout
+    env_val = os.environ.get("FACTUM_LOCK_TIMEOUT")
+    if env_val is not None:
+        try:
+            return float(env_val)
+        except ValueError:
+            fail("LOCK_TIMEOUT", "FACTUM_LOCK_TIMEOUT must be a number.")
+    return 30.0
+
+
 def main():
     args = parser().parse_args()
     try:
         repo = resolve_repo(args.repo)
-        lock = checked_path(repo, "data/.local/writer.lock")
-        durable_mkdir(lock.parent)
-        with FileLock(str(lock), timeout=30):
-            emit(dispatch(repo, args))
+        # Only mutating commands take the writer lock. Reads open SQLite in
+        # read-only mode and never modify corpus state, so serializing them
+        # against writers only adds latency and LOCK_TIMEOUT failures.
+        if is_mutating(args):
+            lock = checked_path(repo, "data/.local/writer.lock")
+            durable_mkdir(lock.parent)
+            timeout = resolve_lock_timeout(args)
+            with FileLock(str(lock), timeout=timeout, poll_interval=0.25):
+                result = dispatch(repo, args)
+                if result is not None:
+                    emit(result)
+        else:
+            result = dispatch(repo, args)
+            if result is not None:
+                emit(result)
     except FactumError as error:
         emit({"error": {"code": error.code, "message": str(error)}}, ok=False)
         raise SystemExit(1)
